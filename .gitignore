@@ -1,0 +1,55 @@
+# from repo root
+cat > .gitignore <<'GITIGNORE'
+# Virtual environments
+venv/
+.venv/
+.env/
+ENV/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# pip, wheel
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+
+# packaging
+*.egg
+*.whl
+
+# Jupyter
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/
+
+# VSCode / editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# system
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+
+# secrets (example)
+.env.local
+GITIGNORE
+
+
+data/

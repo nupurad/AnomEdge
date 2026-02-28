@@ -1,20 +1,12 @@
-# On-Device Factory Anomaly Detection Agent
+# Gemma-3n Factory Anomaly Classifier (JSON SFT)
 
-A hackathon-ready, on-device pipeline for factory safety anomalies:
+Fine-tune Gemma-3n to output strict JSON for:
+- `normal`
+- `smoke_fire`
+- `oil_leak`
+- `conveyor_jam`
 
-1. Camera frame is captured
-2. Vision model classifies anomaly (`oil_spill`, `conveyor_jam`, `smoke`, `normal`)
-3. Agent retrieves relevant SOP from local markdown docs (RAG)
-4. Local LLM (Gemma-compatible) generates an action plan
-5. Offline TTS speaks instructions to workers
-
-## Why on-device
-
-- Lower latency for safety-critical response
-- Works with poor/no internet in industrial zones
-- Privacy and bandwidth savings (no video upload)
-
-## Quickstart
+## Setup
 
 ```bash
 python -m venv .venv
@@ -22,85 +14,98 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Build Training Data Fast (Hackathon)
-
-Capture short class-wise videos on phone/webcam and place them in:
-
-```text
-data/source_videos/
-  normal/
-  oil_spill/
-  conveyor_jam/
-  smoke/
-```
-
-Then run:
+## 1) Download datasets
 
 ```bash
-# 1) Extract frames into data/raw/<class>/
-python scripts/extract_frames.py --input-root data/source_videos --output-root data/raw --every-n-frames 8
-
-# 2) Optional: boost minority class count
-python scripts/augment_class.py --class-dir data/raw/smoke --copies-per-image 2
-
-# 3) Split into train/val folders expected by trainer
-python scripts/split_dataset.py --raw-root data/raw --out-root data/processed --val-ratio 0.2
+python -m src.data.download_dataset
 ```
 
-### 1) Train MobileNet baseline
+Downloads:
+- `neurobotdata/fire-and-smoke-in-confined-space-synthetic-dataset`
+- `vighneshanand/oil-spill-dataset-binary-image-classification`
+- `chiaravaliante/conveyor-belts` (normal conveyor data)
 
-Expected dataset layout:
+## 2) Add your 3 conveyor-jam anomaly images
 
-```text
-data/processed/train/
-  normal/
-  oil_spill/
-  conveyor_jam/
-  smoke/
-data/processed/val/
-  normal/
-  oil_spill/
-  conveyor_jam/
-  smoke/
-```
-
-Train:
+Save your 3 images locally, then run:
 
 ```bash
-python scripts/train_vision.py \
+python -m src.data.add_conveyor_jam_images \
+  --images /absolute/path/jam1.jpg /absolute/path/jam2.jpg /absolute/path/jam3.jpg
+```
+
+This copies them into `data/raw/conveyor_jam/`.
+
+## 3) Build classification folders
+
+```bash
+python -m src.data.prepare_dataset \
+  --fire-smoke-root "/Users/nupurdashputre/.cache/kagglehub/datasets/neurobotdata/fire-and-smoke-in-confined-space-synthetic-dataset/versions/1" \
+  --oil-binary-root "/Users/nupurdashputre/.cache/kagglehub/datasets/vighneshanand/oil-spill-dataset-binary-image-classification/versions/1" \
+  --conveyor-normal-root "/Users/nupurdashputre/.cache/kagglehub/datasets/chiaravaliante/conveyor-belts/versions/1" \
+  --conveyor-jam-root "data/raw/conveyor_jam" \
+  --out-root "data/processed" \
+  --val-ratio 0.2
+```
+
+## 4) Build `train.jsonl` / `eval.jsonl` for your SFT format
+
+```bash
+python -m src.data.build_jsonl \
   --data-root data/processed \
-  --epochs 5 \
-  --batch-size 16 \
-  --out-model models/mobilenet_anomaly.pt
+  --train-out src/train.jsonl \
+  --eval-out src/eval.jsonl \
+  --eval-ratio 0.2
 ```
 
-### 2) Run live loop (camera + local agent + voice)
+Each JSONL row includes:
+- `image`
+- `frame_id`
+- `timestamp`
+- `anomaly_type`
+- `confidence`
+- `flags`
+- `evidence`
+
+## 5) Fine-tune Gemma-3n (your requested SFT style)
 
 ```bash
-python scripts/run_agent.py \
-  --vision-model models/mobilenet_anomaly.pt \
-  --knowledge-dir knowledge \
-  --llm-model-path models/gemma-2b-it-q4.gguf \
-  --camera-index 0
+python -m src.train_gemma3n \
+  --model-id google/gemma-3n-e2b-it \
+  --train-jsonl src/train.jsonl \
+  --eval-jsonl src/eval.jsonl \
+  --output-dir models/gemma3n-json-lora \
+  --batch-size 1 \
+  --grad-accum 8 \
+  --lr 2e-4 \
+  --epochs 2 \
+  --eval-steps 200 \
+  --save-steps 200
 ```
 
-## Architecture
+This follows the same pattern you gave: `load_dataset(json)`, `AutoProcessor`, LoRA via PEFT, and `SFTTrainer` over a combined `text` field.
 
-- `src/vision/`: training + inference for MobileNet anomaly classifier
-- `src/agent/`: markdown RAG and local LLM wrapper
-- `src/audio/`: offline TTS output
-- `src/pipeline/`: end-to-end camera loop orchestration
-- `knowledge/`: local SOP markdown docs used for retrieval
+## Output JSON schema
 
-## Hackathon demo tips (7 hours)
-
-1. Start with transfer learning and a tiny balanced dataset.
-2. Use synthetic augmentations for smoke/oil visual variety.
-3. Keep LLM generation short (`max_tokens=120`) for low latency.
-4. Cache retrieval chunks to avoid repeated parsing.
-5. Data target: minimum 100-200 images/class (after extraction + augmentation) for a usable baseline.
-
-## Notes
-
-- LLM integration uses `llama-cpp-python` so any Gemma GGUF model that runs locally can be used.
-- If no LLM model is present, fallback response is returned from retrieved SOP chunks.
+```json
+{
+  "frame_id": "string",
+  "timestamp": 1700000000,
+  "anomaly_type": "normal | smoke_fire | oil_leak | conveyor_jam",
+  "confidence": 0.0,
+  "flags": {
+    "injury_risk": false,
+    "is_spreading": false,
+    "hazard_suspected": false,
+    "conveyor_halted": false,
+    "motor_overheating": false,
+    "belt_damage_visible": false
+  },
+  "evidence": {
+    "observations": ["short text descriptions"],
+    "bbox": [
+      { "label": "smoke", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4 }
+    ]
+  }
+}
+```
