@@ -7,14 +7,9 @@ import torch
 from datasets import Image as HFImage
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
-<<<<<<< HEAD
-from transformers import AutoModelForCausalLM, AutoProcessor, TrainingArguments
-from trl import SFTTrainer
-=======
 from transformers import AutoModelForCausalLM, AutoProcessor
 from trl import SFTConfig, SFTTrainer
 from trl.trainer.sft_trainer import DataCollatorForVisionLanguageModeling
->>>>>>> 78eab2f (fine-tuned model)
 
 PROMPT = (
     "You are an industrial safety perception model.\n"
@@ -37,22 +32,6 @@ def format_example(ex):
         "evidence": ex.get("evidence", {"observations": [], "bbox": []}),
     }
     completion = json.dumps(target, separators=(",", ":"), ensure_ascii=False)
-<<<<<<< HEAD
-    return {
-        "prompt": PROMPT,
-        "completion": completion,
-        "image": ex.get("image", ex.get("image_path", "")),
-    }
-
-
-def to_sft_text(ex):
-    return {"text": ex["prompt"] + ex["completion"]}
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Gemma-3n LoRA SFT in JSON-output format.")
-    parser.add_argument("--model-id", type=str, default="google/gemma-3n-e2b-it")
-=======
 
     img = ex.get("image", ex.get("image_path", ""))
     if isinstance(img, str) and img:
@@ -121,7 +100,6 @@ def _build_sft_config(args) -> SFTConfig:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gemma-3n LoRA SFT (vision + JSON output).")
     parser.add_argument("--model-id", type=str, default="google/gemma-3n-E2B-it")
->>>>>>> 78eab2f (fine-tuned model)
     parser.add_argument("--train-jsonl", type=Path, default=Path("src/train.jsonl"))
     parser.add_argument("--eval-jsonl", type=Path, default=Path("src/eval.jsonl"))
     parser.add_argument("--output-dir", type=Path, default=Path("models/gemma3n-json-lora"))
@@ -150,15 +128,11 @@ def main() -> None:
     original_cols = ds["train"].column_names
     ds = ds.map(to_sft_record, remove_columns=original_cols)
 
-<<<<<<< HEAD
-    model = AutoModelForCausalLM.from_pretrained(args.model_id, device_map="auto")
-=======
     _validate_image_paths(ds["train"], "train")
     _validate_image_paths(ds["eval"], "eval")
     ds = ds.cast_column("image", HFImage(decode=True))
 
     model = AutoModelForCausalLM.from_pretrained(args.model_id, torch_dtype="auto")
->>>>>>> 78eab2f (fine-tuned model)
 
     lora = LoraConfig(
         r=16,
@@ -170,21 +144,6 @@ def main() -> None:
     )
     model = get_peft_model(model, lora)
 
-<<<<<<< HEAD
-    train_args = TrainingArguments(
-        output_dir=str(args.output_dir),
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        learning_rate=args.lr,
-        num_train_epochs=args.epochs,
-        logging_steps=args.logging_steps,
-        eval_strategy="steps",
-        eval_steps=args.eval_steps,
-        save_steps=args.save_steps,
-        bf16=args.bf16,
-        report_to="none",
-    )
-=======
     sft_args = _build_sft_config(args)
 
     base_collator = DataCollatorForVisionLanguageModeling(processor=processor)
@@ -195,19 +154,13 @@ def main() -> None:
             if isinstance(value, torch.Tensor) and torch.is_floating_point(value):
                 batch[key] = value.to(dtype=model.dtype)
         return batch
->>>>>>> 78eab2f (fine-tuned model)
 
     trainer = SFTTrainer(
         model=model,
         train_dataset=ds["train"],
         eval_dataset=ds["eval"],
-<<<<<<< HEAD
-        dataset_text_field="text",
-        args=train_args,
-=======
         processing_class=processor,
         data_collator=data_collator,
->>>>>>> 78eab2f (fine-tuned model)
     )
 
     trainer.train()
