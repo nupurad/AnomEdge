@@ -55,3 +55,8 @@ GITIGNORE
 data/
 
 models/
+
+anomedge_full_code.zip
+hackathon@hackathon-vm-lilyedge
+
+.hf_cache/

@@ -1,4 +1,5 @@
 import subprocess
+import shutil
 from typing import Optional
 
 
@@ -30,5 +31,14 @@ def build_announcement(severity: str, anomaly_type: str, zone: Optional[str], ma
 
 
 def speak_local(message: str, repeat: int = 1):
+    tts_cmd = None
+    if shutil.which("say"):
+        tts_cmd = "say"
+    elif shutil.which("espeak"):
+        tts_cmd = "espeak"
+
     for _ in range(repeat):
-        subprocess.run(["say", message])
+        if tts_cmd is None:
+            print(f"[VOICE_DISABLED] {message}")
+            return
+        subprocess.run([tts_cmd, message], check=False)

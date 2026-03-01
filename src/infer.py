@@ -64,11 +64,18 @@ def bbox_stub(anomaly_type: str) -> List[Dict[str, float]]:
     return []
 
 
-def to_device(batch: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
+def to_device(
+    batch: Dict[str, torch.Tensor],
+    device: torch.device,
+    model_dtype: torch.dtype,
+) -> Dict[str, torch.Tensor]:
     out: Dict[str, torch.Tensor] = {}
     for k, v in batch.items():
         if isinstance(v, torch.Tensor):
-            out[k] = v.to(device)
+            if torch.is_floating_point(v):
+                out[k] = v.to(device=device, dtype=model_dtype)
+            else:
+                out[k] = v.to(device)
     return out
 
 
@@ -139,7 +146,7 @@ def score_candidate(
     labels = enc_full["input_ids"].clone()
     labels[:, :prompt_len] = -100
 
-    model_inputs = to_device(enc_full, device)
+    model_inputs = to_device(enc_full, device, next(model.parameters()).dtype)
     model_inputs["labels"] = labels.to(device)
 
     with torch.no_grad():

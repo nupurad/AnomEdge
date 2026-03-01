@@ -1,4 +1,3 @@
-# app/agent1_stub.py
 from __future__ import annotations
 
 import time
