@@ -1,11 +1,20 @@
 import argparse
+import inspect
 import json
 from pathlib import Path
 
+import torch
+from datasets import Image as HFImage
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
+<<<<<<< HEAD
 from transformers import AutoModelForCausalLM, AutoProcessor, TrainingArguments
 from trl import SFTTrainer
+=======
+from transformers import AutoModelForCausalLM, AutoProcessor
+from trl import SFTConfig, SFTTrainer
+from trl.trainer.sft_trainer import DataCollatorForVisionLanguageModeling
+>>>>>>> 78eab2f (fine-tuned model)
 
 PROMPT = (
     "You are an industrial safety perception model.\n"
@@ -28,6 +37,7 @@ def format_example(ex):
         "evidence": ex.get("evidence", {"observations": [], "bbox": []}),
     }
     completion = json.dumps(target, separators=(",", ":"), ensure_ascii=False)
+<<<<<<< HEAD
     return {
         "prompt": PROMPT,
         "completion": completion,
@@ -42,6 +52,76 @@ def to_sft_text(ex):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gemma-3n LoRA SFT in JSON-output format.")
     parser.add_argument("--model-id", type=str, default="google/gemma-3n-e2b-it")
+=======
+
+    img = ex.get("image", ex.get("image_path", ""))
+    if isinstance(img, str) and img:
+        img = str(Path(img).resolve())
+
+    return {"prompt": PROMPT, "completion": completion, "image": img}
+
+
+def to_sft_record(ex):
+    # Keep `content` type consistent (list of blocks) for all messages.
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": ex["prompt"]},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": ex["completion"]},
+                ],
+            },
+        ],
+        "image": ex["image"],
+    }
+
+
+def _validate_image_paths(ds_split, split_name: str) -> None:
+    missing = []
+    for i, path in enumerate(ds_split["image"]):
+        if not path or not Path(path).exists():
+            missing.append((i, path))
+        if len(missing) >= 5:
+            break
+    if missing:
+        details = "\n".join([f"  - idx={idx}, image='{path}'" for idx, path in missing])
+        raise FileNotFoundError(
+            f"{split_name} split has missing image files. First {len(missing)} missing entries:\n{details}"
+        )
+
+
+def _build_sft_config(args) -> SFTConfig:
+    sig = inspect.signature(SFTConfig.__init__).parameters
+    kwargs = dict(
+        output_dir=str(args.output_dir),
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=args.lr,
+        num_train_epochs=args.epochs,
+        logging_steps=args.logging_steps,
+        eval_steps=args.eval_steps,
+        save_steps=args.save_steps,
+        bf16=args.bf16,
+        report_to="none",
+    )
+    if "evaluation_strategy" in sig:
+        kwargs["evaluation_strategy"] = "steps"
+    elif "eval_strategy" in sig:
+        kwargs["eval_strategy"] = "steps"
+    return SFTConfig(**kwargs)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Gemma-3n LoRA SFT (vision + JSON output).")
+    parser.add_argument("--model-id", type=str, default="google/gemma-3n-E2B-it")
+>>>>>>> 78eab2f (fine-tuned model)
     parser.add_argument("--train-jsonl", type=Path, default=Path("src/train.jsonl"))
     parser.add_argument("--eval-jsonl", type=Path, default=Path("src/eval.jsonl"))
     parser.add_argument("--output-dir", type=Path, default=Path("models/gemma3n-json-lora"))
@@ -67,9 +147,18 @@ def main() -> None:
     _ = processor
 
     ds = ds.map(format_example)
-    ds = ds.map(to_sft_text)
+    original_cols = ds["train"].column_names
+    ds = ds.map(to_sft_record, remove_columns=original_cols)
 
+<<<<<<< HEAD
     model = AutoModelForCausalLM.from_pretrained(args.model_id, device_map="auto")
+=======
+    _validate_image_paths(ds["train"], "train")
+    _validate_image_paths(ds["eval"], "eval")
+    ds = ds.cast_column("image", HFImage(decode=True))
+
+    model = AutoModelForCausalLM.from_pretrained(args.model_id, torch_dtype="auto")
+>>>>>>> 78eab2f (fine-tuned model)
 
     lora = LoraConfig(
         r=16,
@@ -81,6 +170,7 @@ def main() -> None:
     )
     model = get_peft_model(model, lora)
 
+<<<<<<< HEAD
     train_args = TrainingArguments(
         output_dir=str(args.output_dir),
         per_device_train_batch_size=args.batch_size,
@@ -94,13 +184,30 @@ def main() -> None:
         bf16=args.bf16,
         report_to="none",
     )
+=======
+    sft_args = _build_sft_config(args)
+
+    base_collator = DataCollatorForVisionLanguageModeling(processor=processor)
+
+    def data_collator(examples):
+        batch = base_collator(examples)
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor) and torch.is_floating_point(value):
+                batch[key] = value.to(dtype=model.dtype)
+        return batch
+>>>>>>> 78eab2f (fine-tuned model)
 
     trainer = SFTTrainer(
         model=model,
         train_dataset=ds["train"],
         eval_dataset=ds["eval"],
+<<<<<<< HEAD
         dataset_text_field="text",
         args=train_args,
+=======
+        processing_class=processor,
+        data_collator=data_collator,
+>>>>>>> 78eab2f (fine-tuned model)
     )
 
     trainer.train()
