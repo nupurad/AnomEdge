@@ -110,3 +110,23 @@ def retrieve_sops(
     ranked: List[Tuple[int, SOP]] = [(_score(s, query), s) for s in sops]
     ranked.sort(key=lambda x: x[0], reverse=True)
     return [s for _, s in ranked[:top_k]]
+
+def _is_safety_framework(sop: SOP) -> bool:
+    return sop.sop_id.upper().startswith("SOP-SAF-004")
+
+def retrieve_sops_with_framework(
+    sops: List[SOP],
+    anomaly_type: str,
+    severity: Optional[str],
+    observations: List[str],
+    top_k: int = 2,
+) -> List[SOP]:
+    # normal retrieval
+    matches = retrieve_sops(sops, anomaly_type, severity, observations, top_k=top_k)
+
+    # append SAF framework if present and not already included
+    framework = next((s for s in sops if _is_safety_framework(s)), None)
+    if framework and all(m.sop_id != framework.sop_id for m in matches):
+        matches.append(framework)
+
+    return matches
