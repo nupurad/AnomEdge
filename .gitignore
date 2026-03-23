@@ -1,5 +1,3 @@
-# from repo root
-cat > .gitignore <<'GITIGNORE'
 # Virtual environments
 venv/
 .venv/
@@ -49,7 +47,6 @@ Thumbs.db
 
 # secrets (example)
 .env.local
-GITIGNORE
 
 
 data/
