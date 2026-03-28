@@ -30,7 +30,7 @@ from app.classify_severity import Signals, classify_severity
 from app.planner import plan_incident
 from app.tools import execute_action_plan
 from app.agent1_stub import agent1_stub_from_scenario
-from src.infer import load_model_and_processor, predict_image
+from src.infer import infer_with_retries, load_image, load_model_and_processor
 import torch
 
 DB_PATH = "data/edge_sentinel.db"
@@ -87,6 +87,164 @@ def safe_json_loads(s: str) -> Dict[str, Any]:
     return obj
 
 
+def maybe_parse_json(s: Any) -> Any:
+    if not isinstance(s, str) or not s.strip():
+        return s
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+
+def render_agent1_output(agent1: Dict[str, Any]) -> None:
+    if not agent1:
+        st.info("No perception output yet.")
+        return
+
+    top = st.columns(4)
+    top[0].metric("Anomaly", str(agent1.get("anomaly_type", "normal")))
+    top[1].metric("Confidence", f"{float(agent1.get('confidence') or 0.0):.2f}")
+    top[2].metric("Frame ID", str(agent1.get("frame_id", "-")))
+    top[3].metric("Timestamp", str(agent1.get("timestamp", "-")))
+
+    flags = agent1.get("flags") or {}
+    evidence = agent1.get("evidence") or {}
+
+    st.markdown("**Flags**")
+    st.write(
+        {
+            "injury_risk": bool(flags.get("injury_risk", False)),
+            "is_spreading": bool(flags.get("is_spreading", False)),
+            "hazard_suspected": bool(flags.get("hazard_suspected", False)),
+            "conveyor_halted": bool(flags.get("conveyor_halted", False)),
+            "motor_overheating": bool(flags.get("motor_overheating", False)),
+            "belt_damage_visible": bool(flags.get("belt_damage_visible", False)),
+        }
+    )
+
+    st.markdown("**Observations**")
+    observations = evidence.get("observations") or []
+    if observations:
+        for obs in observations:
+            st.write(f"- {obs}")
+    else:
+        st.caption("No observations returned.")
+
+    bbox = evidence.get("bbox") or []
+    st.markdown("**Bounding boxes**")
+    if bbox:
+        for item in bbox:
+            st.write(item)
+    else:
+        st.caption("No bounding boxes returned.")
+
+
+def render_policy_output(policy: Dict[str, Any]) -> None:
+    if not policy:
+        st.info("No policy output yet.")
+        return
+    cols = st.columns(2)
+    cols[0].metric("Severity", str(policy.get("severity", "-")))
+    tags = policy.get("policy_tags") or []
+    cols[1].metric("Policy tags", str(len(tags)))
+    if tags:
+        st.markdown("**Tags**")
+        for tag in tags:
+            st.write(f"- {tag}")
+    else:
+        st.caption("No policy tags.")
+
+
+def render_plan_output(plan: Dict[str, Any], notes: List[str] | None = None) -> None:
+    if not plan:
+        st.info("No plan generated yet.")
+        return
+
+    summary = plan.get("summary")
+    if summary:
+        st.markdown("**Summary**")
+        st.write(summary)
+
+    sop_refs = plan.get("sop_refs") or []
+    st.markdown("**SOP references**")
+    if sop_refs:
+        for ref in sop_refs:
+            if isinstance(ref, dict):
+                st.write(f"- {ref.get('id', 'SOP')}: {', '.join(ref.get('sections', []))}")
+            else:
+                st.write(f"- {ref}")
+    else:
+        st.caption("No SOP refs.")
+
+    actions = plan.get("action_plan") or []
+    st.markdown("**Action plan**")
+    if actions:
+        for idx, step in enumerate(actions, start=1):
+            if isinstance(step, dict):
+                st.write(f"{idx}. `{step.get('tool', 'tool')}` - {step.get('rationale', '')}")
+                if step.get("args"):
+                    st.caption(f"Args: {step['args']}")
+            else:
+                st.write(f"{idx}. {step}")
+    else:
+        st.caption("No action steps.")
+
+    required_logging = plan.get("required_logging") or {}
+    fields = required_logging.get("fields") or []
+    st.markdown("**Required logging**")
+    if fields:
+        st.write(", ".join(fields))
+    else:
+        st.caption("No required logging fields.")
+
+    assumptions = plan.get("assumptions") or []
+    st.markdown("**Assumptions**")
+    if assumptions:
+        for item in assumptions:
+            st.write(f"- {item}")
+    else:
+        st.caption("No assumptions.")
+
+    if notes:
+        st.caption(f"Planner notes: {notes}")
+
+
+def render_incident_detail(detail: sqlite3.Row | None) -> None:
+    if not detail:
+        st.info("No incident selected.")
+        return
+
+    top = st.columns(4)
+    top[0].metric("Incident ID", detail["id"])
+    top[1].metric("Severity", detail["severity"])
+    top[2].metric("Anomaly", detail["anomaly_type"])
+    top[3].metric("Status", detail["status"])
+
+    st.markdown("**Context**")
+    context = st.columns(3)
+    context[0].write(f"Camera: {detail['camera_id'] or '-'}")
+    context[1].write(f"Zone: {detail['zone'] or '-'}")
+    context[2].write(f"Machine: {detail['machine_id'] or '-'}")
+
+    st.write(f"Confidence: {detail['confidence']}")
+    st.write(f"Connectivity: {detail['connectivity'] or '-'}")
+    st.write(f"Model: {detail['model_name'] or '-'}")
+    st.write(f"Image path: {detail['image_path'] or '-'}")
+
+    st.markdown("**Summary**")
+    st.write(detail["summary"] or "-")
+
+    sop_refs = maybe_parse_json(detail["sop_refs_json"])
+    if sop_refs:
+        st.markdown("**Stored SOP refs**")
+        st.write(sop_refs)
+
+    plan = maybe_parse_json(detail["plan_json"])
+    if isinstance(plan, dict):
+        st.markdown("**Stored plan snapshot**")
+        render_plan_output(plan)
+
+
 def compute_policy(
     agent1: Dict[str, Any],
     *,
@@ -123,14 +281,30 @@ def _get_agent1_model_runner(model_dir: str, base_model: str):
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    model, processor, classes = load_model_and_processor(Path(model_dir), base_model)
+    model, processor = load_model_and_processor(Path(model_dir), base_model)
     model.to(device)
-    return model, processor, classes, device
+    return model, processor, device
 
 
-def run_agent1_model(*, image_path: str, model_dir: str, base_model: str) -> Dict[str, Any]:
-    model, processor, classes, device = _get_agent1_model_runner(model_dir, base_model)
-    return predict_image(model, processor, classes, Path(image_path), device)
+def run_agent1_model(
+    *,
+    image_path: str | None,
+    camera_index: int,
+    model_dir: str,
+    base_model: str,
+    retries: int = 3,
+    max_new_tokens: int = 300,
+) -> Dict[str, Any]:
+    model, processor, device = _get_agent1_model_runner(model_dir, base_model)
+    image = load_image(Path(image_path) if image_path else None, camera_index)
+    return infer_with_retries(
+        model=model,
+        processor=processor,
+        image=image,
+        device=device,
+        retries=retries,
+        max_new_tokens=max_new_tokens,
+    )
 
 
 def main():
@@ -145,7 +319,13 @@ def main():
     with st.sidebar:
         st.header("Input")
 
-        uploaded = st.file_uploader("Upload image (jpg/png)", type=["jpg", "jpeg", "png"])
+        input_mode = st.radio("Image source", options=["Upload image", "Camera capture"], index=0)
+        uploaded = None
+        captured = None
+        if input_mode == "Upload image":
+            uploaded = st.file_uploader("Upload image (jpg/png)", type=["jpg", "jpeg", "png"])
+        else:
+            captured = st.camera_input("Capture frame")
         obs_text = st.text_area("Optional observations (one per line)", value="")
         observations = [ln.strip() for ln in obs_text.splitlines() if ln.strip()]
 
@@ -176,6 +356,7 @@ def main():
         st.divider()
         st.header("Context")
         camera_id = st.text_input("camera_id", value="cam-01")
+        camera_index = st.number_input("camera_index", min_value=0, value=0, step=1)
         zone = st.text_input("zone", value="Zone-3")
         machine_id = st.text_input("machine_id", value="Machine-A")
         connectivity = st.selectbox("connectivity", ["offline", "online"])
@@ -187,17 +368,12 @@ def main():
 
         run_clicked = st.button("Run full pipeline", type="primary")
 
-    # ----------------------------
-    # Main area: Preview image + live outputs
-    # ----------------------------
-    left, right = st.columns([1, 1])
-
     image_path = None
-    if uploaded:
-        img = Image.open(uploaded).convert("RGB")
-        with left:
-            st.subheader("Input image")
-            st.image(img, use_container_width=True)
+    preview = uploaded or captured
+    if preview:
+        img = Image.open(preview).convert("RGB")
+        st.subheader("Input frame")
+        st.image(img, use_container_width=True)
         # Save to a temp file so you can store path in DB
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             img.save(tmp.name)
@@ -223,10 +399,13 @@ def main():
                     agent1["evidence"].setdefault("bbox", [])
                     model_name_effective = "agent1-manual-json"
                 elif agent1_source == "Model inference":
-                    if not image_path:
+                    if input_mode == "Upload image" and not image_path:
                         raise ValueError("Upload an image to run Agent1 model inference.")
+                    if input_mode == "Camera capture" and not captured:
+                        raise ValueError("Capture a frame to run Agent1 model inference.")
                     agent1 = run_agent1_model(
                         image_path=image_path,
+                        camera_index=int(camera_index),
                         model_dir=agent1_model_dir,
                         base_model=agent1_base_model,
                     )
@@ -318,82 +497,78 @@ def main():
             st.session_state["last_traceback"] = traceback.format_exc()
             st.error(f"Pipeline failed: {type(e).__name__}: {e}")
 
-    # ----------------------------
-    # Left pane: Latest outputs
-    # ----------------------------
-    with left:
-        status = st.session_state.get("last_run_status")
-        if status == "running":
-            st.info("Pipeline is running...")
-        elif status == "success":
-            st.success("Last run completed successfully.")
-        elif status == "error":
-            st.error(f"Last run failed: {st.session_state.get('last_error', 'unknown error')}")
-            with st.expander("Show traceback"):
-                st.code(st.session_state.get("last_traceback", ""), language="text")
+    status = st.session_state.get("last_run_status")
+    if status == "running":
+        st.info("Pipeline is running...")
+    elif status == "success":
+        st.success("Last run completed successfully.")
+    elif status == "error":
+        st.error(f"Last run failed: {st.session_state.get('last_error', 'unknown error')}")
+        with st.expander("Show traceback"):
+            st.code(st.session_state.get("last_traceback", ""), language="text")
 
-        st.subheader("Agent 1 Output (Perception)")
-        st.json(st.session_state.get("last_agent1", {}))
+    st.divider()
+    st.subheader("Agent 1 Output (Perception)")
+    render_agent1_output(st.session_state.get("last_agent1", {}))
 
-        st.subheader("Policy Output")
-        st.json(st.session_state.get("last_policy", {}))
+    st.divider()
+    st.subheader("Policy Output")
+    render_policy_output(st.session_state.get("last_policy", {}))
 
-        st.subheader("Agent 2 Plan (SOP-grounded)")
-        st.json(st.session_state.get("last_plan", {}))
-        if "last_notes" in st.session_state:
-            st.caption(f"Planner notes: {st.session_state['last_notes']}")
+    st.divider()
+    st.subheader("Agent 2 Plan (SOP-grounded)")
+    render_plan_output(
+        st.session_state.get("last_plan", {}),
+        st.session_state.get("last_notes"),
+    )
 
-    # ----------------------------
-    # Right pane: DB viewers
-    # ----------------------------
-    with right:
-        st.subheader("Incidents (SQLite)")
-        incidents = fetch_incidents(limit=50)
-        if incidents:
-            st.dataframe(
-                [
-                    {
-                        "id": r["id"],
-                        "created_at": r["created_at"],
-                        "zone": r["zone"],
-                        "machine": r["machine_id"],
-                        "anomaly": r["anomaly_type"],
-                        "sev": r["severity"],
-                        "conf": r["confidence"],
-                        "status": r["status"],
-                    }
-                    for r in incidents
-                ],
-                use_container_width=True,
-            )
+    st.divider()
+    st.subheader("Incident detail")
+    incidents = fetch_incidents(limit=50)
+    if incidents:
+        default_id = st.session_state.get("last_incident_id") or incidents[0]["id"]
+        selected = st.selectbox(
+            "Select incident for details",
+            options=[r["id"] for r in incidents],
+            index=[r["id"] for r in incidents].index(default_id) if default_id in [r["id"] for r in incidents] else 0,
+        )
+        detail = fetch_incident_detail(selected)
+        render_incident_detail(detail)
 
-            default_id = st.session_state.get("last_incident_id") or incidents[0]["id"]
-            selected = st.selectbox(
-                "Select incident for details",
-                options=[r["id"] for r in incidents],
-                index=[r["id"] for r in incidents].index(default_id) if default_id in [r["id"] for r in incidents] else 0,
-            )
+        st.divider()
+        st.subheader("Incidents table")
+        st.dataframe(
+            [
+                {
+                    "id": r["id"],
+                    "created_at": r["created_at"],
+                    "zone": r["zone"],
+                    "machine": r["machine_id"],
+                    "anomaly": r["anomaly_type"],
+                    "severity": r["severity"],
+                    "confidence": r["confidence"],
+                    "status": r["status"],
+                }
+                for r in incidents
+            ],
+            use_container_width=True,
+        )
 
-            st.subheader("Incident detail")
-            detail = fetch_incident_detail(selected)
-            if detail:
-                st.json({k: detail[k] for k in detail.keys()})
-
-            st.subheader("Audit trail")
-            audit = fetch_audit(selected)
-            st.dataframe(
-                [
-                    {
-                        "timestamp": a["timestamp"],
-                        "event_type": a["event_type"],
-                        "data_json": a["data_json"],
-                    }
-                    for a in audit
-                ],
-                use_container_width=True,
-            )
-        else:
-            st.info("No incidents yet. Use the sidebar to run a scenario.")
+        st.subheader("Audit trail")
+        audit = fetch_audit(selected)
+        st.dataframe(
+            [
+                {
+                    "timestamp": a["timestamp"],
+                    "event_type": a["event_type"],
+                    "data_json": a["data_json"],
+                }
+                for a in audit
+            ],
+            use_container_width=True,
+        )
+    else:
+        st.info("No incidents yet. Use the sidebar to run a scenario.")
 
 
 if __name__ == "__main__":

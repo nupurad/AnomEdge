@@ -12,5 +12,4 @@ def build_mobilenet(num_classes: int) -> nn.Module:
 
 
 def class_names() -> List[str]:
-    return ["normal", "smoke_fire", "oil_leak", "conveyor_jam"]
-
+    return ["normal", "smoke_fire", "oil_leak", "belt_damage"]

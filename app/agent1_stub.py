@@ -37,10 +37,11 @@ def agent1_stub_from_scenario(
         base["confidence"] = 0.86
         base["flags"]["is_spreading"] = True
         base["evidence"]["observations"] = base["evidence"]["observations"] or ["dark reflective fluid spreading"]
-    elif s == "jam":
-        base["anomaly_type"] = "conveyor_jam"
+    elif s in {"jam", "belt_damage", "tear", "wear"}:
+        base["anomaly_type"] = "belt_damage"
         base["confidence"] = 0.88
         base["flags"]["conveyor_halted"] = True
-        base["evidence"]["observations"] = base["evidence"]["observations"] or ["belt stopped; obstruction visible"]
+        base["flags"]["belt_damage_visible"] = True
+        base["evidence"]["observations"] = base["evidence"]["observations"] or ["visible belt tear or wear near conveyor"]
 
     return base

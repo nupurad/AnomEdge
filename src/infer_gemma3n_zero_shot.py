@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
-ALLOWED_ANOMALIES = {"normal", "smoke_fire", "oil_leak", "conveyor_jam"}
+ALLOWED_ANOMALIES = {"normal", "smoke_fire", "oil_leak", "belt_damage"}
 
 PROMPT = (
     "You are an industrial safety perception model.\n"
@@ -19,7 +19,7 @@ PROMPT = (
     '{'
     '"frame_id":"string",'
     '"timestamp":1700000000,'
-    '"anomaly_type":"normal|smoke_fire|oil_leak|conveyor_jam",'
+    '"anomaly_type":"normal|smoke_fire|oil_leak|belt_damage",'
     '"confidence":0.0,'
     '"flags":{'
     '"injury_risk":false,'

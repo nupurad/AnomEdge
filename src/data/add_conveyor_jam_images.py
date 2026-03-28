@@ -7,20 +7,20 @@ IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Copy provided conveyor-jam anomaly images into data/raw/conveyor_jam."
+        description="Copy provided belt-damage anomaly images into data/raw/belt_damage."
     )
     parser.add_argument(
         "--images",
         nargs="+",
         type=Path,
         required=True,
-        help="Absolute or relative paths to jam anomaly images.",
+        help="Absolute or relative paths to belt-damage anomaly images.",
     )
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("data/raw/conveyor_jam"),
-        help="Destination folder for conveyor_jam samples.",
+        default=Path("data/raw/belt_damage"),
+        help="Destination folder for belt_damage samples.",
     )
     args = parser.parse_args()
 
@@ -35,12 +35,12 @@ def main() -> None:
             print(f"Skipping non-image file: {image_path}")
             continue
 
-        dst = args.out_dir / f"conveyor_jam_user_{i:03d}{image_path.suffix.lower()}"
+        dst = args.out_dir / f"belt_damage_user_{i:03d}{image_path.suffix.lower()}"
         shutil.copy2(image_path, dst)
         copied += 1
         print(f"Copied: {image_path} -> {dst}")
 
-    print(f"Total copied conveyor-jam images: {copied}")
+    print(f"Total copied belt-damage images: {copied}")
 
 
 if __name__ == "__main__":

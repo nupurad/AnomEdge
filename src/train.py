@@ -13,7 +13,7 @@ from transformers import (
     TrainingArguments,
 )
 
-CLASS_ORDER = ["normal", "smoke_fire", "oil_leak", "conveyor_jam"]
+CLASS_ORDER = ["normal", "smoke_fire", "oil_leak", "belt_damage"]
 
 
 def device_dtype() -> torch.dtype:

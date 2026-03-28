@@ -1,205 +1,273 @@
 import argparse
+import hashlib
+import json
 import random
 import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-
-
-def find_images(root: Path) -> List[Path]:
-    images: List[Path] = []
-    for p in root.rglob("*"):
-        if p.is_file() and p.suffix.lower() in IMG_EXT:
-            images.append(p)
-    return images
+CLASSES = ("normal", "smoke_fire", "oil_leak", "belt_damage")
 
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def copy_images(image_paths: List[Path], out_dir: Path, prefix: str) -> None:
+def is_image(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in IMG_EXT
+
+
+def find_images(root: Path) -> List[Path]:
+    if not root.exists():
+        return []
+    return sorted([p for p in root.rglob("*") if is_image(p)])
+
+
+def sha1_for_file(path: Path) -> str:
+    h = hashlib.sha1()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def copy_images(image_paths: Iterable[Path], out_dir: Path, prefix: str) -> List[Path]:
     ensure_dir(out_dir)
+    written: List[Path] = []
     for i, src in enumerate(image_paths):
         dst = out_dir / f"{prefix}_{i:06d}{src.suffix.lower()}"
         shutil.copy2(src, dst)
+        written.append(dst)
+    return written
 
 
 def split_train_val(images: List[Path], val_ratio: float, seed: int) -> Dict[str, List[Path]]:
-    random.seed(seed)
     shuffled = images[:]
-    random.shuffle(shuffled)
+    rng = random.Random(seed)
+    rng.shuffle(shuffled)
     n_val = int(len(shuffled) * val_ratio)
     return {"val": shuffled[:n_val], "train": shuffled[n_val:]}
 
 
-def classify_oil_binary_image_path(path: Path) -> str | None:
-    text = str(path).lower().replace("-", "_").replace(" ", "_")
-    # Check negative labels first; they still contain the token "oil".
-    negative_tokens = ["no_oil", "non_oil", "without_oil", "nooil", "clean"]
-    if any(token in text for token in negative_tokens):
+def maybe_downsample(images: List[Path], max_count: int | None, seed: int) -> List[Path]:
+    if max_count is None or max_count <= 0 or len(images) <= max_count:
+        return images
+    sampled = images[:]
+    rng = random.Random(seed)
+    rng.shuffle(sampled)
+    return sorted(sampled[:max_count])
+
+
+def read_jsonl(path: Path) -> List[dict]:
+    rows: List[dict] = []
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+def normalize_conveyor_label(raw_label: str) -> str | None:
+    label = (raw_label or "").strip().lower()
+    if label == "good":
         return "normal"
-    if "oil" in text:
-        return "oil_leak"
+    if label in {"tear", "wear"}:
+        return "belt_damage"
     return None
+
+
+def load_conveyor_annotated(raw_root: Path) -> Dict[str, List[Path]]:
+    dataset_dir = raw_root / "Conveyer belt.paligemma" / "dataset"
+    annotations_path = dataset_dir / "_annotations.train.jsonl"
+    class_to_paths: Dict[str, List[Path]] = {klass: [] for klass in CLASSES}
+
+    for row in read_jsonl(annotations_path):
+        image_name = row.get("image")
+        if not image_name:
+            continue
+        image_path = dataset_dir / image_name
+        if not is_image(image_path):
+            continue
+
+        suffix = str(row.get("suffix", "")).strip()
+        raw_label = suffix.split()[-1] if suffix else ""
+        mapped = normalize_conveyor_label(raw_label)
+        if mapped is None:
+            continue
+        class_to_paths[mapped].append(image_path)
+
+    return class_to_paths
+
+
+def load_belt_damage_extra(raw_root: Path) -> List[Path]:
+    return find_images(raw_root / "belt_damage_extra")
+
+
+def load_spills_dataset(raw_root: Path) -> List[Path]:
+    return find_images(raw_root / "spills.paligemma" / "dataset")
+
+
+def load_fire_dataset(raw_root: Path) -> List[Path]:
+    return find_images(raw_root / "fire-in-factory.paligemma" / "dataset")
+
+
+def load_normal_dataset(raw_root: Path) -> List[Path]:
+    return find_images(raw_root / "Normal")
+
+
+def dedupe_class_to_paths(class_to_paths: Dict[str, List[Path]]) -> tuple[Dict[str, List[Path]], Dict[str, int]]:
+    seen_hashes: set[str] = set()
+    deduped: Dict[str, List[Path]] = {klass: [] for klass in class_to_paths}
+    duplicate_counts: Dict[str, int] = {klass: 0 for klass in class_to_paths}
+
+    for klass, paths in class_to_paths.items():
+        for path in paths:
+            digest = sha1_for_file(path)
+            if digest in seen_hashes:
+                duplicate_counts[klass] += 1
+                continue
+            seen_hashes.add(digest)
+            deduped[klass].append(path)
+
+    return deduped, duplicate_counts
+
+
+def build_manifest_rows(
+    split_to_written: Dict[str, Dict[str, List[Path]]],
+    original_lookup: Dict[Path, Path],
+) -> List[dict]:
+    rows: List[dict] = []
+    for split, class_map in split_to_written.items():
+        for klass, written_paths in class_map.items():
+            for written_path in written_paths:
+                source_path = original_lookup[written_path]
+                rows.append(
+                    {
+                        "split": split,
+                        "label": klass,
+                        "image": str(written_path),
+                        "source_image": str(source_path),
+                        "source_dataset": source_path.parts[1] if len(source_path.parts) > 1 else source_path.parent.name,
+                    }
+                )
+    return rows
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Build data/processed/{train,val}/<class> folders for "
-            "normal|smoke_fire|oil_leak|conveyor_jam."
+            "Clean and prepare data/processed/{train,val}/<class> from the current raw datasets. "
+            "Classes: normal|smoke_fire|oil_leak|belt_damage."
         )
     )
-    parser.add_argument(
-        "--fire-smoke-root",
-        type=Path,
-        required=True,
-        help="Path from kagglehub download for fire/smoke images.",
-    )
-    parser.add_argument(
-        "--oil-binary-root",
-        type=Path,
-        default=None,
-        help=(
-            "Path to kaggle oil binary dataset root. "
-            "Images in 'no_oil*' folders map to normal; 'oil*' map to oil_leak."
-        ),
-    )
-    parser.add_argument(
-        "--normal-root",
-        type=Path,
-        default=None,
-        help="Folder with normal factory images.",
-    )
-    parser.add_argument(
-        "--conveyor-normal-root",
-        type=Path,
-        default=None,
-        help="Path to normal-only conveyor belt dataset; all images are mapped to normal.",
-    )
-    parser.add_argument(
-        "--oil-leak-root",
-        type=Path,
-        default=None,
-        help="Folder with oil leak images.",
-    )
-    parser.add_argument(
-        "--conveyor-jam-root",
-        type=Path,
-        default=None,
-        help="Folder with conveyor jam images.",
-    )
-    parser.add_argument(
-        "--out-root", type=Path, default=Path("data/processed"), help="Output dataset root."
-    )
+    parser.add_argument("--raw-root", type=Path, default=Path("data/raw"))
+    parser.add_argument("--out-root", type=Path, default=Path("data/processed"))
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--allow-single-class",
+        "--max-per-class",
+        type=int,
+        default=None,
+        help="Optional global cap applied to each class after deduplication.",
+    )
+    parser.add_argument(
+        "--max-oil-leak",
+        type=int,
+        default=None,
+        help="Optional cap applied specifically to the oil_leak class after deduplication.",
+    )
+    parser.add_argument(
+        "--include-conveyor-good-as-normal",
         action="store_true",
-        help="Allow preparing data with just one class (not suitable for standard classification training).",
+        help="Include conveyor 'Good' images in the normal class in addition to data/raw/Normal.",
     )
     args = parser.parse_args()
 
-    class_to_paths = {"smoke_fire": find_images(args.fire_smoke_root)}
+    class_to_paths: Dict[str, List[Path]] = {klass: [] for klass in CLASSES}
 
-    if args.oil_binary_root is not None:
-        oil_images = find_images(args.oil_binary_root)
-        oil_pos = []
-        oil_neg = []
-        unknown = 0
-        for image_path in oil_images:
-            klass = classify_oil_binary_image_path(image_path)
-            if klass == "oil_leak":
-                oil_pos.append(image_path)
-            elif klass == "normal":
-                oil_neg.append(image_path)
-            else:
-                unknown += 1
+    class_to_paths["smoke_fire"].extend(load_fire_dataset(args.raw_root))
+    class_to_paths["oil_leak"].extend(load_spills_dataset(args.raw_root))
+    class_to_paths["normal"].extend(load_normal_dataset(args.raw_root))
 
-        if oil_pos:
-            class_to_paths["oil_leak"] = class_to_paths.get("oil_leak", []) + oil_pos
-        if oil_neg:
-            class_to_paths["normal"] = class_to_paths.get("normal", []) + oil_neg
+    conveyor_classes = load_conveyor_annotated(args.raw_root)
+    class_to_paths["belt_damage"].extend(conveyor_classes["belt_damage"])
+    class_to_paths["belt_damage"].extend(load_belt_damage_extra(args.raw_root))
+    if args.include_conveyor_good_as_normal:
+        class_to_paths["normal"].extend(conveyor_classes["normal"])
 
-        print(
-            "Oil-binary mapping: "
-            f"oil_leak={len(oil_pos)}, normal={len(oil_neg)}, skipped_unknown={unknown}"
+    class_to_paths, duplicate_counts = dedupe_class_to_paths(class_to_paths)
+
+    missing = [klass for klass, paths in class_to_paths.items() if not paths]
+    if missing:
+        raise ValueError(
+            "No images found for required classes: "
+            + ", ".join(missing)
+            + ". Check data/raw contents before preparing the dataset."
         )
 
-    optional_roots = {
-        "normal": args.normal_root,
-        "oil_leak": args.oil_leak_root,
-        "conveyor_jam": args.conveyor_jam_root,
+    class_to_paths = {
+        klass: maybe_downsample(paths, args.max_per_class, args.seed)
+        for klass, paths in class_to_paths.items()
     }
-    missing_optional = []
-    empty_optional = []
-
-    for class_name, root in optional_roots.items():
-        if root is None:
-            missing_optional.append(class_name)
-            continue
-        images = find_images(root)
-        if images:
-            class_to_paths[class_name] = class_to_paths.get(class_name, []) + images
-        else:
-            empty_optional.append((class_name, root))
-
-    if args.conveyor_normal_root is not None:
-        conveyor_normal_images = find_images(args.conveyor_normal_root)
-        if conveyor_normal_images:
-            class_to_paths["normal"] = class_to_paths.get("normal", []) + conveyor_normal_images
-            print(
-                "Conveyor-normal mapping: "
-                f"normal={len(conveyor_normal_images)}"
-            )
-        else:
-            empty_optional.append(("normal (from conveyor-normal-root)", args.conveyor_normal_root))
-
-    if not class_to_paths["smoke_fire"]:
-        raise ValueError(
-            "No images found for class 'smoke_fire'. "
-            "Check --fire-smoke-root and make sure it contains image files."
-        )
-
-    if empty_optional:
-        details = ", ".join([f"{c} ({p})" for c, p in empty_optional])
-        print(f"Warning: no images found for optional class roots: {details}")
-    if missing_optional:
-        print(f"Warning: optional class roots not provided: {', '.join(missing_optional)}")
-
-    if len(class_to_paths) < 2 and not args.allow_single_class:
-        raise ValueError(
-            "Only one class is available (smoke_fire). "
-            "Provide at least one additional class (normal/oil_leak/conveyor_jam), "
-            "or pass --allow-single-class to just prepare files."
-        )
+    class_to_paths["oil_leak"] = maybe_downsample(class_to_paths["oil_leak"], args.max_oil_leak, args.seed)
 
     if args.out_root.exists():
         shutil.rmtree(args.out_root)
 
-    for class_name, images in class_to_paths.items():
-        split = split_train_val(images, args.val_ratio, args.seed)
-        copy_images(
-            split["train"],
-            args.out_root / "train" / class_name,
-            prefix=f"{class_name}_train",
-        )
-        copy_images(
-            split["val"],
-            args.out_root / "val" / class_name,
-            prefix=f"{class_name}_val",
-        )
-        print(
-            f"{class_name}: train={len(split['train'])}, "
-            f"val={len(split['val'])}, total={len(images)}"
-        )
+    manifest_lookup: Dict[Path, Path] = {}
+    split_to_written: Dict[str, Dict[str, List[Path]]] = {"train": {}, "val": {}}
+    summary = {"classes": {}, "duplicate_counts": duplicate_counts}
 
-    print(f"Prepared dataset at: {args.out_root.resolve()}")
-    print(f"Classes included: {', '.join(sorted(class_to_paths.keys()))}")
+    for klass, images in class_to_paths.items():
+        split = split_train_val(images, args.val_ratio, args.seed)
+        train_written = copy_images(split["train"], args.out_root / "train" / klass, prefix=f"{klass}_train")
+        val_written = copy_images(split["val"], args.out_root / "val" / klass, prefix=f"{klass}_val")
+
+        for src, dst in zip(split["train"], train_written):
+            manifest_lookup[dst] = src
+        for src, dst in zip(split["val"], val_written):
+            manifest_lookup[dst] = src
+
+        split_to_written["train"][klass] = train_written
+        split_to_written["val"][klass] = val_written
+        summary["classes"][klass] = {
+            "total": len(images),
+            "train": len(train_written),
+            "val": len(val_written),
+        }
+
+    manifest_rows = build_manifest_rows(split_to_written, manifest_lookup)
+    manifest_path = args.out_root / "manifest.jsonl"
+    with manifest_path.open("w", encoding="utf-8") as f:
+        for row in manifest_rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    summary_path = args.out_root / "summary.json"
+    summary["raw_root"] = str(args.raw_root)
+    summary["manifest"] = str(manifest_path)
+    summary["include_conveyor_good_as_normal"] = args.include_conveyor_good_as_normal
+    summary["max_per_class"] = args.max_per_class
+    summary["max_oil_leak"] = args.max_oil_leak
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    print(f"Prepared cleaned dataset at: {args.out_root.resolve()}")
+    for klass in CLASSES:
+        info = summary["classes"][klass]
+        print(
+            f"{klass}: total={info['total']}, train={info['train']}, val={info['val']}, "
+            f"duplicates_skipped={duplicate_counts[klass]}"
+        )
+    print(f"Manifest: {manifest_path}")
+    print(f"Summary: {summary_path}")
 
 
 if __name__ == "__main__":

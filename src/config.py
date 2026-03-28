@@ -5,7 +5,7 @@ from typing import List
 
 @dataclass(frozen=True)
 class ClassConfig:
-    classes: List[str] = ("normal", "smoke_fire", "oil_leak", "conveyor_jam")
+    classes: List[str] = ("normal", "smoke_fire", "oil_leak", "belt_damage")
 
 
 @dataclass(frozen=True)
@@ -18,4 +18,3 @@ class TrainConfig:
     num_workers: int = 2
     data_root: Path = Path("data/processed")
     model_out: Path = Path("models/mobilenet_anomaly.pt")
-

@@ -37,7 +37,7 @@ def init_db(reset: bool = False):
         zone TEXT,
         machine_id TEXT,
 
-        anomaly_type TEXT NOT NULL,      -- normal|oil_leak|smoke|conveyor_jam
+        anomaly_type TEXT NOT NULL,      -- normal|oil_leak|smoke_fire|belt_damage
         severity TEXT NOT NULL,          -- P0|P1|P2
         confidence REAL,                 -- 0..1
 

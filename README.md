@@ -4,7 +4,7 @@ Fine-tune Gemma-3n to output strict JSON for:
 - `normal`
 - `smoke_fire`
 - `oil_leak`
-- `conveyor_jam`
+- `belt_damage`
 
 ## Setup
 
@@ -25,7 +25,7 @@ Downloads:
 - `vighneshanand/oil-spill-dataset-binary-image-classification`
 - `chiaravaliante/conveyor-belts` (normal conveyor data)
 
-## 2) Add your 3 conveyor-jam anomaly images
+## 2) Add your belt-damage anomaly images
 
 Save your 3 images locally, then run:
 
@@ -34,7 +34,7 @@ python -m src.data.add_conveyor_jam_images \
   --images /absolute/path/jam1.jpg /absolute/path/jam2.jpg /absolute/path/jam3.jpg
 ```
 
-This copies them into `data/raw/conveyor_jam/`.
+This copies them into `data/raw/belt_damage/`.
 
 ## 3) Build classification folders
 
@@ -43,7 +43,7 @@ python -m src.data.prepare_dataset \
   --fire-smoke-root "/Users/nupurdashputre/.cache/kagglehub/datasets/neurobotdata/fire-and-smoke-in-confined-space-synthetic-dataset/versions/1" \
   --oil-binary-root "/Users/nupurdashputre/.cache/kagglehub/datasets/vighneshanand/oil-spill-dataset-binary-image-classification/versions/1" \
   --conveyor-normal-root "/Users/nupurdashputre/.cache/kagglehub/datasets/chiaravaliante/conveyor-belts/versions/1" \
-  --conveyor-jam-root "data/raw/conveyor_jam" \
+  --conveyor-jam-root "data/raw/belt_damage" \
   --out-root "data/processed" \
   --val-ratio 0.2
 ```
@@ -91,7 +91,7 @@ This follows the same pattern you gave: `load_dataset(json)`, `AutoProcessor`, L
 {
   "frame_id": "string",
   "timestamp": 1700000000,
-  "anomaly_type": "normal | smoke_fire | oil_leak | conveyor_jam",
+  "anomaly_type": "normal | smoke_fire | oil_leak | belt_damage",
   "confidence": 0.0,
   "flags": {
     "injury_risk": false,

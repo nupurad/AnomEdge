@@ -1,11 +1,10 @@
 import argparse
 import json
-import random
 import time
 from pathlib import Path
 from typing import Dict, List
 
-CLASSES = ["normal", "smoke_fire", "oil_leak", "conveyor_jam"]
+CLASSES = ["normal", "smoke_fire", "oil_leak", "belt_damage"]
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
@@ -30,7 +29,7 @@ def flags_for_class(anomaly_type: str) -> Dict[str, bool]:
         flags.update({"injury_risk": True, "is_spreading": True, "hazard_suspected": True})
     elif anomaly_type == "oil_leak":
         flags.update({"injury_risk": True, "hazard_suspected": True})
-    elif anomaly_type == "conveyor_jam":
+    elif anomaly_type == "belt_damage":
         flags.update(
             {
                 "injury_risk": True,
@@ -47,8 +46,8 @@ def bbox_for_class(anomaly_type: str):
         return [{"label": "smoke", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}]
     if anomaly_type == "oil_leak":
         return [{"label": "oil", "x": 0.15, "y": 0.55, "w": 0.25, "h": 0.2}]
-    if anomaly_type == "conveyor_jam":
-        return [{"label": "jam", "x": 0.45, "y": 0.35, "w": 0.3, "h": 0.25}]
+    if anomaly_type == "belt_damage":
+        return [{"label": "belt_damage", "x": 0.45, "y": 0.35, "w": 0.3, "h": 0.25}]
     return []
 
 
@@ -59,7 +58,7 @@ def observation_for_class(anomaly_type: str) -> str:
         return "Visible smoke/fire indicators in scene."
     if anomaly_type == "oil_leak":
         return "Possible oil spill / leak region visible."
-    return "Conveyor obstruction/jam visible on belt."
+    return "Visible conveyor belt damage in scene."
 
 
 def build_record(image_path: Path, anomaly_type: str, ts: int) -> Dict:
@@ -82,35 +81,39 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=Path("data/processed"))
     parser.add_argument("--train-out", type=Path, default=Path("src/train.jsonl"))
     parser.add_argument("--eval-out", type=Path, default=Path("src/eval.jsonl"))
-    parser.add_argument("--eval-ratio", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    random.seed(args.seed)
-
-    all_rows: List[Dict] = []
+    train_rows: List[Dict] = []
+    eval_rows: List[Dict] = []
     ts = int(time.time())
 
     for anomaly_type in CLASSES:
-        class_dir = args.data_root / "train" / anomaly_type
+        train_dir = args.data_root / "train" / anomaly_type
+        val_dir = args.data_root / "val" / anomaly_type
         alt_dir = args.data_root / anomaly_type
-        source_dir = class_dir if class_dir.exists() else alt_dir
-        if not source_dir.exists():
-            continue
 
-        images = find_images(source_dir)
-        random.shuffle(images)
-        for img in images:
-            all_rows.append(build_record(img, anomaly_type, ts))
-            ts += 1
+        if train_dir.exists():
+            for img in find_images(train_dir):
+                train_rows.append(build_record(img, anomaly_type, ts))
+                ts += 1
+        elif alt_dir.exists():
+            for img in find_images(alt_dir):
+                train_rows.append(build_record(img, anomaly_type, ts))
+                ts += 1
 
-    if not all_rows:
-        raise ValueError("No images found to build JSONL. Check --data-root.")
+        if val_dir.exists():
+            for img in find_images(val_dir):
+                eval_rows.append(build_record(img, anomaly_type, ts))
+                ts += 1
 
-    random.shuffle(all_rows)
-    split = int(len(all_rows) * (1.0 - args.eval_ratio))
-    train_rows = all_rows[:split]
-    eval_rows = all_rows[split:]
+    if not train_rows:
+        raise ValueError("No train images found to build JSONL. Check --data-root.")
+
+    if not eval_rows:
+        raise ValueError(
+            "No validation images found to build eval JSONL. "
+            "Expected data/processed/val/<class> folders."
+        )
 
     args.train_out.parent.mkdir(parents=True, exist_ok=True)
     args.eval_out.parent.mkdir(parents=True, exist_ok=True)

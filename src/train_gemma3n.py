@@ -7,19 +7,50 @@ import torch
 from datasets import Image as HFImage
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForImageTextToText, AutoProcessor
 from trl import SFTConfig, SFTTrainer
 from trl.trainer.sft_trainer import DataCollatorForVisionLanguageModeling
 
 PROMPT = (
     "You are an industrial safety perception model.\n"
-    "Analyze the image and output ONLY valid JSON with this schema:\n"
-    '{ "frame_id": string, "timestamp": int, "anomaly_type": "normal|smoke_fire|oil_leak|conveyor_jam", '
-    '"confidence": float, "flags": {"injury_risk": bool, "is_spreading": bool, "hazard_suspected": bool, '
-    '"conveyor_halted": bool, "motor_overheating": bool, "belt_damage_visible": bool}, '
-    '"evidence": {"observations": string[], "bbox": object[]} }\n'
-    "No extra text. Output JSON only.\n"
+    "Analyze the image and output ONLY one valid JSON object.\n"
+    "Do not output markdown, code fences, explanations, notes, reasoning, or extra text.\n"
+    "Do not wrap the JSON in backticks.\n"
+    "Do not invent anomalies that are not visually supported by the image.\n"
+    "Do not guess hidden causes, machine state, or hazards unless they are visually evident.\n"
+    "If the scene does not clearly show smoke/fire, oil leak, or belt damage, use anomaly_type=\"normal\".\n"
+    "Use exactly this schema:\n"
+    '{'
+    '"frame_id": string, '
+    '"timestamp": int, '
+    '"anomaly_type": "normal|smoke_fire|oil_leak|belt_damage", '
+    '"confidence": float, '
+    '"flags": {'
+    '"injury_risk": bool, '
+    '"is_spreading": bool, '
+    '"hazard_suspected": bool, '
+    '"conveyor_halted": bool, '
+    '"motor_overheating": bool, '
+    '"belt_damage_visible": bool'
+    '}, '
+    '"evidence": {'
+    '"observations": string[], '
+    '"bbox": object[]'
+    "}"
+    '}\n'
+    "Guardrails:\n"
+    "- anomaly_type must be exactly one of: normal, smoke_fire, oil_leak, belt_damage.\n"
+    "- confidence must be a float between 0.0 and 1.0.\n"
+    "- observations must be short, image-grounded statements only.\n"
+    "- bbox must be an empty list if no anomaly region is clearly visible.\n"
+    "- bbox entries must describe only visible regions in the image.\n"
+    "- Set belt_damage_visible=true only when belt tear, wear, or visible belt damage is present.\n"
+    "- Set conveyor_halted=true only if stoppage is visually evident; otherwise false.\n"
+    "- Set motor_overheating=true only if there is visible evidence such as smoke, glow, or clear overheating signs.\n"
+    "- If uncertain, choose the safer conservative output and lower confidence rather than inventing details.\n"
+    "Return JSON only.\n"
 )
+
 
 
 def format_example(ex):
@@ -74,6 +105,13 @@ def _validate_image_paths(ds_split, split_name: str) -> None:
         raise FileNotFoundError(
             f"{split_name} split has missing image files. First {len(missing)} missing entries:\n{details}"
         )
+
+
+def _ensure_rgb(example):
+    image = example["image"]
+    if hasattr(image, "convert"):
+        example["image"] = image.convert("RGB")
+    return example
 
 
 def _build_sft_config(args) -> SFTConfig:
@@ -131,8 +169,9 @@ def main() -> None:
     _validate_image_paths(ds["train"], "train")
     _validate_image_paths(ds["eval"], "eval")
     ds = ds.cast_column("image", HFImage(decode=True))
+    ds = ds.map(_ensure_rgb)
 
-    model = AutoModelForCausalLM.from_pretrained(args.model_id, torch_dtype="auto")
+    model = AutoModelForImageTextToText.from_pretrained(args.model_id, torch_dtype="auto")
 
     lora = LoraConfig(
         r=16,
@@ -157,6 +196,7 @@ def main() -> None:
 
     trainer = SFTTrainer(
         model=model,
+        args=sft_args,
         train_dataset=ds["train"],
         eval_dataset=ds["eval"],
         processing_class=processor,
@@ -165,6 +205,7 @@ def main() -> None:
 
     trainer.train()
     trainer.save_model(str(args.output_dir))
+    processor.save_pretrained(str(args.output_dir))
 
 
 if __name__ == "__main__":

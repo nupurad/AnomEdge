@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Literal, Tuple, List
 
 Severity = Literal["P0", "P1", "P2"]
-Anomaly = Literal["smoke_fire", "oil_leak", "conveyor_jam", "normal"]
+Anomaly = Literal["smoke_fire", "oil_leak", "belt_damage", "normal"]
 
 @dataclass
 class Signals:
@@ -22,8 +22,8 @@ def normalize_anomaly(a: str) -> Anomaly:
         return "smoke_fire"
     if a in ("oil_leak", "leak", "fluid_leak"):
         return "oil_leak"
-    if a in ("conveyor_jam", "jam"):
-        return "conveyor_jam"
+    if a in ("belt_damage", "conveyor_jam", "jam", "tear", "wear"):
+        return "belt_damage"
     return "normal"
 
 def base_severity(anomaly: Anomaly, s: Signals) -> Severity:
@@ -40,7 +40,7 @@ def base_severity(anomaly: Anomaly, s: Signals) -> Severity:
         return "P2"
 
     # SOP-JAM-003 ladder :contentReference[oaicite:3]{index=3}
-    if anomaly == "conveyor_jam":
+    if anomaly == "belt_damage":
         if s.motor_overheating or s.belt_damage_visible:
             return "P0"
         if s.conveyor_halted:
